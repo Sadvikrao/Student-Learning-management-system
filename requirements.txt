@@ -1,0 +1,8 @@
+pymongo
+langchain-openai
+langchain-core
+langchain
+streamlit
+pybase64
+datetime
+
