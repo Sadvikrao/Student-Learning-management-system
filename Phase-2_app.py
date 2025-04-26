@@ -12,6 +12,7 @@ from collections import Counter
 from collections import defaultdict
 import pandas as pd
 import numpy as np
+import openai
 
 # Simulated user database
 client = MongoClient('mongodb+srv://krrish852456:krrish852456@cluster0.99khz.mongodb.net/?retryWrites=true&w=majority&appid=Cluster0')
@@ -32,6 +33,7 @@ ab=db["Attendance"]
 ag=db["AgAttendance"]
 f=db["Feedback"]
 carddata=db["card"]
+ansd=db["Ansd"]
 fs = gridfs.GridFS(db)
 fsa = gridfs.GridFS(dba)
 # Session state initialization
@@ -42,15 +44,21 @@ if "logged_in" not in st.session_state:
     st.session_state["userid"] = ""
     st.session_state["role"] = ""
 if "messages" not in st.session_state:
-        st.session_state.messages = {}  # Store chat history per user
+    st.session_state.messages = {}  # Store chat history per user
 if "admin_joined" not in st.session_state:
-        st.session_state.admin_joined = {}
+    st.session_state.admin_joined = {}
 if 'mar' not in st.session_state:
     st.session_state.mar=0
 if 'mark' not in st.session_state:
     st.session_state.mark=0
 if 'exam' not in st.session_state:
     st.session_state.exam=0
+if 'descriptive' not in st.session_state:
+    st.session_state.descriptive=0
+if 'call' not in st.session_state:
+    st.session_state.call=0
+if "ms" not in st.session_state:
+    st.session_state["ms"] = [{"role": "assistant", "content": "Enter your profession to get course recommendations:"}]
 
 #Logout Function
 def logout():
@@ -60,6 +68,19 @@ def logout():
     st.session_state["rerun"] = True
     st.rerun()
 
+openai.api_key = st.secrets["OPEN_API_KEY"]
+
+def get_embedding(text, model="text-embedding-3-small"):
+    response = openai.embeddings.create(
+        input=text,
+        model=model
+    )
+    return response.data[0].embedding
+
+def cosine_similarity(vec1, vec2):
+    vec1 = np.array(vec1)
+    vec2 = np.array(vec2)
+    return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
 
 #Reg function
 def reg():
@@ -136,7 +157,8 @@ def retrivala(c,ins):
                 module.append(metadata['name'])
     
     n=m.find({'id':ins,'option':'Assesment'},{"name":1})
-    
+    y=0
+    x=0
     if n is not None:
         for f in n:
             module.append(f['name'])
@@ -146,50 +168,59 @@ def retrivala(c,ins):
         
         query = {"metadata.name": selected_filename}
         results = list(db.fs.files.find(query, {"metadata": 1}))
+
         if results!=[]:
             # Dropdown to select a PDF file
             # Retrieve the PDF file from MongoDB
             file_id = results[0]['_id']
             pdf_data = fs.get(file_id).read()
-            if results[0]['filename'].split(".")[1]=='pdf':
-                
-                #display_pdf(pdf_data.read())
-                st.warning("Please don't upload PDF file. The PDF file viwer is not working on Cloud.")
+            if results[0]['metadata']['filename'].split(".")[1]=='pdf':
+                display_pdf(pdf_data.read())
             # Convert to bytes and display
-            else:
-                st.download_button(label="Download", data=pdf_data, file_name=selected_filename)
-            
-            if results[0]['choice']=='Descriptive':
+            st.download_button(label="Download PDF", data=pdf_data, file_name=selected_filename)
+
+            if results[0]['metadata']['choice']=='Descriptive':
                 st.write(results[0]['metadata']['description'])
                 ans=st.text_area('Enter the Answer')
 
-            if results[0]['choice']=='MCQ':
-                np.random.shuffle(results[0]['metadata']['a'])
+                ansd.insert_one({'id':st.session_state["userid"],'course':c,'ins':ins,'question':results[0]['metadata']['description'],'ans':ans,'flag':results[0]['metadata']['flag']})
+                embedding1 = get_embedding(ans)
+                if results[0]['metadata']['flag']:
+                    embedding2 = get_embedding(results[0]['metadata']['ans'])
+                    similarity_score = cosine_similarity(embedding1, embedding2)
+                    x=1
+            if results[0]['metadata']['choice']=='MCQ':
                 ans=st.radio(results[0]['metadata']['description'],[results[0]['metadata']['a']])
 
-            if results[0]['choice']=='More than One Answer MCQ':
+            if results[0]['metadata']['choice']=='More than One Answer MCQ':
                 ans=[]
-                np.random.shuffle(results[0]['metadata']['a'])
                 for i in results[0]['metadata']['a']:
                     ci=st.checkbox(i)
                     if ci==True:
                         ans.append(i)
 
-            if results[0]['choice']=='True or False':
+            if results[0]['metadata']['choice']=='True or False':
                 ans=st.radio(results[0]['metadata']['description'],[True,False])
+            y=1
             
         n=m.find_one({"name":selected_filename})
+
         if n is not None:
             if n['option']=='Assesment':
                 if n['choice']=='Descriptive':
                     st.write(n['description'])
                     ans=st.text_area('Enter the Answer')
+                    ansd.insert_one({'id':st.session_state["userid"],'course':c,'ins':ins,'question':n['description'],'ans':ans,'flag':n['flag']})
+                    embedding1 = get_embedding(ans)
+                    if n['flag']:
+                        embedding2 = get_embedding(n['ans'])
+                        similarity_score = cosine_similarity(embedding1, embedding2)
+                        x=1
+
                 if n['choice']=='MCQ':
-                    np.random.shuffle(n['a'])
                     ans=st.radio(n['description'],n['a'])
                 if n['choice']=='More than One Answer MCQ':
                     ans=[]
-                    np.random.shuffle(n['a'])
                     for i in n['a']:
                         ci=st.checkbox(i)
                         if ci:
@@ -197,26 +228,51 @@ def retrivala(c,ins):
                 if n['choice']=='True or False':
                     ans=st.radio(n['description'],['True','False'])
 
-                if st.button('submit'):
-                    a.insert_one({'course':c,'ins':ins,'mod':selected_filename,'id':st.session_state['userid']})
-                    st.session_state.mark=st.session_state.mark+1
+        if st.button('submit'):
+            a.insert_one({'course':c,'ins':ins,'mod':selected_filename,'id':st.session_state['userid']})
+            st.session_state.mark=st.session_state.mark+1
 
-                    if ans==n['ans']:
-                        
-                        st.session_state.mar=st.session_state.mar+1
+            if y==1:
+                if results[0]['metadata']['flag']:
+                    if x==0:
+                        if ans==results[0]['metadata']['ans']:
+                            st.session_state.mar=st.session_state.mar+1
 
-                        st.success(f'✅Correct Score:{st.session_state.mar}')
+                            st.success(f'✅Correct Score:{st.session_state.mar}')
+                        else:
+                            st.error('Wrong')
                     else:
-                        st.write('Wrong')
-                        if st.session_state.mark==len(module):
-                            st.title(f'Total Score: {st.session_state.mar}')
-                            ma=p.find_one({'course':c,'instructor':ins},{'_id':0,'m':1})
-                            marks=st.session_state.mar+ma['m']
-                            st.session_state.exam=st.session_state.exam+1
-                            ass.insert_one({'Exam':f'Exam{st.session_state.exam}','course':c,'instructor':ins,'Marks':st.session_state.mar})
-                            p.update_one({'course':c,'instructor':ins},{'$set':{'m':marks}})
-                            st.session_state.mar=0
-                            st.session_state.mark=0
+                        st.session_state.mar=st.session_state.mar+similarity_score
+                        st.success(f'✅Correct Score:{results[0]["metadata"]["tmark"]*similarity_score}')
+                else:
+                    st.warning('Will be graded by the Instructor soon')
+            else:
+                if n['flag']:
+                    if x==0:
+                        if ans==n['ans']: 
+                            
+                            st.session_state.mar=st.session_state.mar+1
+
+                            st.success(f'✅Correct Score:{st.session_state.mar}')
+                        else:
+                            st.error('Wrong')
+                    else:
+                        st.session_state.mar=st.session_state.mar+similarity_score
+                        st.success(f'✅Correct Score:{n["tmark"]*similarity_score}')
+                else:
+                    st.warning('Will be graded by the Instructor soon')
+            
+                
+            if st.session_state.mark==len(module):
+                st.title(f'Total Score: {st.session_state.mar}')
+                ma=p.find_one({'course':c,'instructor':ins},{'_id':0,'m':1})
+                marks=st.session_state.mar+ma['m']
+                st.session_state.exam=st.session_state.exam+1
+                ass.insert_one({'Exam':f'Exam{st.session_state.exam}','course':c,'instructor':ins,'student':st.session_state['userid'],'Marks':st.session_state.mar})
+                p.update_one({'course':c,'instructor':ins},{'$set':{'m':marks}})
+                st.session_state.mar=0
+                st.session_state.mark=0
+
     else:
         st.warning('Already Answered')
 
@@ -270,7 +326,7 @@ def moduleview():
         st.write("⚠️ No PDFs found in the database.")
 
 def mainc():
-    llm=ChatOpenAI(api_key=st.secrets["OPENAI_API_KEY"],                            #st.secrets["OPEN_API_KEY"]
+    llm=ChatOpenAI(api_key=st.secrets["OPEN_API_KEY"],                            #st.secrets["OPEN_API_KEY"]
                    model_name='gpt-4o',
                    temperature=0.0)
     prompt_template='''If any actionable prompt is given the state yes else give the response.   
@@ -325,7 +381,7 @@ def mainc():
 # Main app interface Student
 def maini():
     st.sidebar.title("Navigation")
-    page = st.sidebar.radio("Go to", ["Dashboard", "Module", "view Assignments","Roll Call","View Attendance","Customer Care"])
+    page = st.sidebar.radio("Go to", ["Dashboard", "Module", "view Assignments","Roll Call","View Attendance","Correction","Customer Care"])
 
     if page == "Dashboard":
         st.title("Dashboard")
@@ -356,35 +412,43 @@ def maini():
             if option=='Learning Content' or option=='Assignment':
                 
                 if st.button("Upload"):
-                    
-                    if uploaded_file.name.split('.')[1]=='pdf':
-                        st.warning("Please don't upload PDF file. The PDF file viwer is not working on Cloud.")
-                    else:
-                        if uploaded_file is not None:
-                            st.success(f"✅ Uploaded: {uploaded_file.name}")
-    
-                            # Convert file to binary for MongoDB storage
-                            file_data = uploaded_file.read()
-                            
-                            # Check if file already exists in MongoDB
-                            existing_file = db.fs.files.find_one({"filename": uploaded_file.name})
-                            
-                            if existing_file:
-                                st.warning("⚠️ File already exists in MongoDB.")
-                            else:
-                                # Store file in GridFS
-                                if option=='Learning Content':
-                                    file_id = fs.put(file_data, filename=uploaded_file.name,metadata={"filename":uploaded_file.name,"name": name, "course": optionm, "description": description,'id':st.session_state['userid'],'option':option})
-                                    st.success(f"📁 File saved to MongoDB with ID: {file_id}")
-                                else:
-                                    file_id = fs.put(file_data, filename=uploaded_file.name,metadata={"filename":uploaded_file.name,"name": name, "course": optionm, "description": description,'id':st.session_state['userid'],'option':option,'flag':flag,'dead':dt})
-                                    st.success(f"📁 File saved to MongoDB with ID: {file_id}")
-                    
+                    if uploaded_file is not None:
+                        st.success(f"✅ Uploaded: {uploaded_file.name}")
+
+                        # Convert file to binary for MongoDB storage
+                        file_data = uploaded_file.read()
                         
+                        # Check if file already exists in MongoDB
+                        existing_file = db.fs.files.find_one({"filename": uploaded_file.name})
+                        
+                        if existing_file:
+                            st.warning("⚠️ File already exists in MongoDB.")
+                        else:
+                            # Store file in GridFS
+                            if option=='Learning Content':
+                                file_id = fs.put(file_data, filename=uploaded_file.name,metadata={"filename":uploaded_file.name,"name": name, "course": optionm, "description": description,'id':st.session_state['userid'],'option':option})
+                                st.success(f"📁 File saved to MongoDB with ID: {file_id}")
+                            else:
+                                file_id = fs.put(file_data, filename=uploaded_file.name,metadata={"filename":uploaded_file.name,"name": name, "course": optionm, "description": description,'id':st.session_state['userid'],'option':option,'flag':flag})
+                                st.success(f"📁 File saved to MongoDB with ID: {file_id}")
+
+                    else:
+                        if option=='Learning Content':
+                            m.insert_one({"name": name, "course": optionm, "description": description,'id':st.session_state['userid'],'option':option})
+                            st.success(f"✅ Uploaded")
+                        else:
+                            m.insert_one({"name": name, "course": optionm, "description": description,'id':st.session_state['userid'],'option':option,'flag':flag})
+                            st.success(f"✅ Uploaded")
+
             if option=='Assesment':
                 m.delete_many({option:"Assesment"})
                 choice = st.selectbox("Type of Question",('Descriptive','MCQ','More than One Answer MCQ','True or False'))
+                mar=int(st.text_input("Enter the Total Marks for the Question",1))
                 if choice=='Descriptive':
+                    if flag:
+                        ans=st.text_area('Enter the Answer')
+                    else:
+                        ans='Will be corrected by Instructor'
                     if st.button("Upload"):
                         if uploaded_file is not None:
                             st.success(f"✅ Uploaded: {uploaded_file.name}")
@@ -399,11 +463,11 @@ def maini():
                                 st.warning("⚠️ File already exists in MongoDB.")
                             else:
                                 # Store file in GridFS
-                                file_id = fs.put(file_data, filename=uploaded_file.name,metadata={"filename":uploaded_file.name,"name": name, "course": optionm, "description": description,'id':st.session_state['userid'],'option':option,'flag':flag,'choice':choice})
+                                file_id = fs.put(file_data, filename=uploaded_file.name,metadata={"filename":uploaded_file.name,"name": name, "course": optionm, "description": description,'id':st.session_state['userid'],'option':option,'flag':flag,'choice':choice,'ans':ans,'tmark':mar})
                                 st.success(f"📁 File saved to MongoDB with ID: {file_id}")
 
                         else:
-                            m.insert_one({"name": name, "course": optionm, "description": description,'id':st.session_state['userid'],'option':option,'flag':flag,'choice':choice})
+                            m.insert_one({"name": name, "course": optionm, "description": description,'id':st.session_state['userid'],'option':option,'flag':flag,'choice':choice,'ans':ans,'tmark':mar})
                             st.success(f"✅ Uploaded")
 
                 if choice=='MCQ' or choice=='More than One Answer MCQ':
@@ -435,11 +499,11 @@ def maini():
                                     st.warning("⚠️ File already exists in MongoDB.")
                                 else:
                                     # Store file in GridFS
-                                    file_id = fs.put(file_data, filename=uploaded_file.name,metadata={"filename":uploaded_file.name,"name": name, "course": optionm, "description": description,'id':st.session_state['userid'],'option':option,'flag':flag,'choice':choice,'a':a,'ans':an})
+                                    file_id = fs.put(file_data, filename=uploaded_file.name,metadata={"filename":uploaded_file.name,"name": name, "course": optionm, "description": description,'id':st.session_state['userid'],'option':option,'flag':flag,'choice':choice,'a':a,'ans':an,'tmark':mar})
                                     st.success(f"📁 File saved to MongoDB with ID: {file_id}")
 
                             else:
-                                m.insert_one({"name": name, "course": optionm, "description": description,'id':st.session_state['userid'],'option':option,'flag':flag,'choice':choice,'a':a,'ans':an})
+                                m.insert_one({"name": name, "course": optionm, "description": description,'id':st.session_state['userid'],'option':option,'flag':flag,'choice':choice,'a':a,'ans':an,'tmark':mar})
                                 st.success(f"✅ Uploaded")
         
                 if choice=='True or False':
@@ -458,11 +522,11 @@ def maini():
                                     st.warning("⚠️ File already exists in MongoDB.")
                                 else:
                                     # Store file in GridFS
-                                    file_id = fs.put(file_data, filename=uploaded_file.name,metadata={"filename":uploaded_file.name,"name": name, "course": optionm, "description": description,'id':st.session_state['userid'],'option':option,'flag':flag,'choice':choice,'ans':an})
+                                    file_id = fs.put(file_data, filename=uploaded_file.name,metadata={"filename":uploaded_file.name,"name": name, "course": optionm, "description": description,'id':st.session_state['userid'],'option':option,'flag':flag,'choice':choice,'ans':an,'tmark':mar})
                                     st.success(f"📁 File saved to MongoDB with ID: {file_id}")
 
                             else:
-                                m.insert_one({"name": name, "course": optionm, "description": description,'id':st.session_state['userid'],'option':option,'flag':flag,'choice':choice,'ans':an})
+                                m.insert_one({"name": name, "course": optionm, "description": description,'id':st.session_state['userid'],'option':option,'flag':flag,'choice':choice,'ans':an,'tmark':mar})
                                 st.success(f"✅ Uploaded")
     
     elif page == "view Assignments":
@@ -514,6 +578,7 @@ def maini():
             if id==True:
                 r.append(i['id'])
         if st.button('Submit'):
+            st.session_state.call=st.session_state.call+1
             ab.insert_one({'course':optionm,'instructor':st.session_state['userid'],'att':r})
             if ag.find({}) is not None:
                 ag.delete_many({})
@@ -521,8 +586,9 @@ def maini():
             all_att = [course for doc in data for course in doc["att"]]
             att_counts = Counter(all_att)
             att=dict(att_counts)
-            att.update({'course':optionm,'instructor':st.session_state['userid']})
-            ag.insert_one(att)
+            atd={k: (v / st.session_state.call)*100 for k, v in att.items()}
+            atd.update({'course':optionm,'instructor':st.session_state['userid']})
+            ag.insert_one(atd)
     
     elif page=="View Attendance":
         st.title("Attendance")
@@ -532,9 +598,25 @@ def maini():
         optionm = st.selectbox("Course",(key_values))
         ma=ag.find({'course':optionm,'instructor':st.session_state['userid']},{'_id':0,'course':0,'instructor':0})
         for i in ma:
-            print('i')
             st.write(pd.DataFrame([i]))
-            
+
+    elif page=="Correction":
+        st.title("Descriptive Questions Correction")
+        documents=collection2.find({"Instructor": {"$in": [st.session_state["userid"]]}},{"course": 1, "_id": 0})
+        if documents is not None:
+            key_values = [doc['course'] for doc in documents if 'course' in doc]
+        optionm = st.selectbox("Course",(key_values))
+        x=list(ansd.find({'flag':False,'course':optionm,'ins':st.session_state["userid"]},{'_id':0,'question':1,'ans':1}))
+
+        for i in x:
+            st.write(f'{i["question"]}')
+            st.write(f'Ans: {i["ans"]}')
+            st.text_input('marks')
+        if st.button('Grade'):
+            st.session_state.descriptive=st.session_state.descriptive+1
+            ansd.find({'flag':False,'course':optionm,'ins':st.session_state["userid"],'question':i["question"],'ans':i["ans"]},{'_id':0,'id':1})
+            ass.insert_one({'Exam':f'Descriptive{st.session_state.descriptive}','course':optionm,'instructor':st.session_state['userid'],'student':st.session_state['userid'],'Marks':st.session_state.mar})
+
         
     elif page == "Customer Care":
         st.title("Customer Care")
@@ -546,7 +628,7 @@ def maini():
 # Main app interface Instructor
 def mains():
     st.sidebar.title("Navigation")
-    page = st.sidebar.radio("Go to", ["Dashboard", "Module", "Assignment","Assesment","Course Recom","Prof Recom","Payment","Feedback","Customer Care"])
+    page = st.sidebar.radio("Go to", ["Dashboard", "Module", "Assignment","Assesment","Course Recom","Prof Recom","Payment","Feedback","View Grades","Customer Care"])
     if page == "Dashboard":
         st.title("Home Page")
         st.write(f"Hello, {st.session_state['userid']}! You are logged in as {st.session_state['role']}.")
@@ -595,14 +677,14 @@ def mains():
         ins = p.find_one({"spec":s,'course':c}, {"instructor": 1, "_id": 0})
         if ins is not None:
             i=ins['instructor']
-            m=retrival(c,i,page)
+            mas=retrival(c,i,page)
 
         uploaded_file = st.file_uploader("Upload a PDF file", type=[])
         if st.button('upload'):
             if uploaded_file is not None:
                 file_data = uploaded_file.read()
                 display_pdf(file_data)
-                file_id = fsa.put(file_data, filename=f'{m}.{i}.{uploaded_file.name}.{st.session_state["userid"]}')
+                file_id = fsa.put(file_data, filename=f'{mas}.{i}.{uploaded_file.name}.{st.session_state["userid"]}')
                 st.success(f"📁 File saved to MongoDB with ID: {file_id}")
 
     elif page == "Assesment":
@@ -624,16 +706,37 @@ def mains():
                     i=ins['instructor']
                     retrivala(c,i)
         
-    elif page=="View Attendance":
-        st.title("Attendance")
-        documents=collection2.find({"Instructor": {"$in": [st.session_state["userid"]]}},{"course": 1, "_id": 0})
+    elif page=="View Grades":
+        st.title("Grades")
+        documents = p.find({'id':st.session_state["userid"]}, {"spec": 1, "_id": 0})
+        if documents is not None:
+            key_values = [doc['spec'] for doc in documents if 'spec' in doc]
+        
+        s = st.selectbox("Specialization",(key_values))
+
+        documents = p.find({'id':st.session_state['userid'],"spec":s}, {"course": 1, "_id": 0})
         if documents is not None:
             key_values = [doc['course'] for doc in documents if 'course' in doc]
-        optionm = st.selectbox("Course",(key_values))
-        ma=ag.find({'course':optionm,'instructor':st.session_state['userid']},{'_id':0,'course':0,'instructor':0,f'{st.session_state["userid"]}':1})
-        for i in ma:
-            print('i')
-            st.write(pd.DataFrame([i]))
+            if key_values != []:
+                c = st.selectbox("course",key_values)
+                a=list(ass.find({'course':c,'student':st.session_state["userid"]},{'Exam':1,'_id':0,'Marks':1}))
+                am=list(p.find({'id':st.session_state["userid"],'spec':s,'course':c},{"_id":0,'m':1}))
+                im=list(p.find({'id':st.session_state["userid"],'spec':s,'course':c},{"_id":0,'instructor':1}))
+                tm=list(m.find({'id':im[0]['instructor'],'option':'Assesment','course':c},{'_id':0,'tmark':1}))
+                fg=[i['tmark'] for i in tm]
+                sum=0
+                for i in fg:
+                    sum=sum+i
+
+                for i in a:
+                    st.write(f'{i["Exam"]}: {i["Marks"]}')
+
+                st.write(f'Total:{(am[0]["m"]/sum)*100}%')
+                ma=ag.find({'course':c})
+                for i in ma:
+                    st.write(f'Attendance:{i[st.session_state["userid"]]}%')
+
+        
 
     elif page == "Payment":
         st.title("Payment")
@@ -714,9 +817,7 @@ def mains():
         llm=ChatOpenAI(api_key=st.secrets["OPENAI_API_KEY"],                            #st.secrets["OPEN_API_KEY"]
                    model_name='gpt-4o',
                    temperature=0.0)
-        if "ms" not in st.session_state:
-            st.session_state["ms"] = [{"role": "assistant", "content": "Enter your profession to get course recommendations:"}]
-
+        
         st.title("Course Recommendation System")
         documents=collection1.find({},{'course':1,'_id':0})
         key_values = [i for doc in documents for i in doc['course'] if 'course' in doc]
@@ -771,6 +872,8 @@ def mains():
 
     if st.button("Logout"):
         logout()
+
+
 
 
 # Main app interface Admin
@@ -884,13 +987,13 @@ def maina():
     elif page == "Notification":
         st.session_state["messages"]=[i for i in sum.find({})][0]
         st.title("Customer Service")
-        m=[]
+        mes=[]
         c=cust.find({},{'query':1,'id':1,'_id':0})
         if c !=[]:
             for j in c:
                     a=f'{j["id"]}.{j["query"]}'
-                    m.append(a)
-            option = st.selectbox("Notifications",(m))
+                    mes.append(a)
+            option = st.selectbox("Notifications",(mes))
             
             if option is not None:
                 o=option.split('.')
