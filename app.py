@@ -39,13 +39,13 @@ fsa = gridfs.GridFS(dba)
 # Session state initialization
 if "reg_in" not in st.session_state:
     st.session_state["reg_in"] = False
-if "logged_in" not in st.session_state:
+if "logged_in"  not in st.session_state:
     st.session_state["logged_in"] = False
     st.session_state["userid"] = ""
     st.session_state["role"] = ""
-if "messages" not in st.session_state:
+if "messages"  not in st.session_state:
     st.session_state.messages = {}  # Store chat history per user
-if "admin_joined" not in st.session_state:
+if "admin_joined"  not in st.session_state:
     st.session_state.admin_joined = {}
 if 'mar' not in st.session_state:
     st.session_state.mar=0
@@ -123,11 +123,12 @@ def retrival(c,i,o):
             metadata = file.get("metadata", {})
             if metadata['course']==c and metadata['id']==i and metadata['option']==o:
                 module.append(metadata['name'])
-    n=m.find({'id':i,'option':o},{"name":1})
-    if n is not None:
+    n=list(m.find({'id':i,'option':o},{"name":1,"_id":0,"course":1,"id":1,"option":1}))
+    if n!=[]:
         for f in n:
-            module.append(f['name'])
-        selected_filename = st.selectbox("Select a PDF to View",module)
+            if f['course']==c and f['id']==i and f['option']==o:
+                module.append(f['name'])
+        selected_filename = st.selectbox("Select a file to View",module)
 
     query = {"metadata.name": selected_filename}
     results = list(db.fs.files.find(query, {"metadata": 1}))
@@ -139,7 +140,7 @@ def retrival(c,i,o):
         pdf_data = fs.get(file_id)
         if results[0]['metadata']['filename'].split(".")[1]=='pdf':
             display_pdf(pdf_data.read())
-        st.download_button(label="Download PDF", data=pdf_data.read(), file_name=selected_filename)    
+        st.download_button(label="Download", data=pdf_data.read(), file_name=selected_filename)    
     
 
     n=m.find_one({"name":selected_filename})
@@ -162,7 +163,7 @@ def retrivala(c,ins):
     if n is not None:
         for f in n:
             module.append(f['name'])
-        selected_filename = st.selectbox("Select a PDF to View",module)
+        selected_filename = st.selectbox("Select the Question",module)
         
     if a.find_one({'course':c,'ins':ins,'mod':selected_filename,'id':st.session_state['userid']}) is None:
         
@@ -210,12 +211,14 @@ def retrivala(c,ins):
                 if n['choice']=='Descriptive':
                     st.write(n['description'])
                     ans=st.text_area('Enter the Answer')
-                    ansd.insert_one({'id':st.session_state["userid"],'course':c,'ins':ins,'question':n['description'],'ans':ans,'flag':n['flag']})
-                    embedding1 = get_embedding(ans)
-                    if n['flag']:
-                        embedding2 = get_embedding(n['ans'])
-                        similarity_score = cosine_similarity(embedding1, embedding2)
-                        x=1
+                    if st.button('answer'):
+                        ansd.insert_one({'id':st.session_state["userid"],'course':c,'ins':ins,'question':n['description'],'ans':ans,'flag':n['flag'],'tmark':n['tmark']})
+                        embedding1 = get_embedding(ans)
+                        
+                        if n['flag']:
+                            embedding2 = get_embedding(n['ans'])
+                            similarity_score = cosine_similarity(embedding1, embedding2)
+                            x=1
 
                 if n['choice']=='MCQ':
                     ans=st.radio(n['description'],n['a'])
@@ -541,12 +544,14 @@ def maini():
         if pdf_files!=[]:
             for file in pdf_files:
                 metadata = file.get("metadata", {})
-                if metadata['course']==optionm:
+                if metadata['course']==optionm and  metadata['option']=='Assignment' and metadata['id']==st.session_state['userid']:
                     module.append(metadata['name'])
-        n=m.find({},{"name":1})
-        if n is not None:
+        n=list(m.find({},{"name":1,'_id':0,'course':1,'id':1,'option':1}))
+
+        if n !=[]:
             for f in n:
-                module.append(f['name'])
+                if f['course']==optionm and  f['option']=='Assignment' and f['id']==st.session_state['userid']:
+                    module.append(f['name'])
         selected_filename = st.selectbox("Select module",module)
         pdf_files = dba.fs.files.find({'filename': {"$regex": selected_filename}}, {"filename": 1})
         
@@ -554,16 +559,16 @@ def maini():
         a=[]
         if pdf_files is not None:
             for i in pdf_files:
-                a.append(i['filename'])    
-        selected_filename = st.selectbox("Select a PDF to View",a)
+                a.append(i['filename'])  
+        selected_filename = st.selectbox("Select a file to View",a)
         file_id = dba.fs.files.find_one({"filename":selected_filename}, {"_id": 1})
         
         if file_id is not None:
-            pdf_data = fsa.get(file_id['_id']).read()
+            data = fsa.get(file_id['_id']).read()
             if 'pdf' in selected_filename.split('.'):
-                display_pdf(pdf_data)
-        # Convert to bytes and display
-        st.download_button(label="Download PDF", data=pdf_data, file_name=selected_filename)
+                display_pdf(data)
+            # Convert to bytes and display
+            st.download_button(label="Download", data=data, file_name=selected_filename)
 
     elif page == "Roll Call":
         st.title("Roll Call")
@@ -606,16 +611,20 @@ def maini():
         if documents is not None:
             key_values = [doc['course'] for doc in documents if 'course' in doc]
         optionm = st.selectbox("Course",(key_values))
-        x=list(ansd.find({'flag':False,'course':optionm,'ins':st.session_state["userid"]},{'_id':0,'question':1,'ans':1}))
-
-        for i in x:
-            st.write(f'{i["question"]}')
-            st.write(f'Ans: {i["ans"]}')
-            st.text_input('marks')
-        if st.button('Grade'):
-            st.session_state.descriptive=st.session_state.descriptive+1
-            ansd.find({'flag':False,'course':optionm,'ins':st.session_state["userid"],'question':i["question"],'ans':i["ans"]},{'_id':0,'id':1})
-            ass.insert_one({'Exam':f'Descriptive{st.session_state.descriptive}','course':optionm,'instructor':st.session_state['userid'],'student':st.session_state['userid'],'Marks':st.session_state.mar})
+        x=list(ansd.find({'flag':False,'course':optionm,'ins':st.session_state["userid"]},{'_id':0,'question':1,'ans':1,'id':1,'tmark':1}))
+        if x!=[]:
+            for i in x:
+                st.write(f'{i["question"]}')
+                st.write(f'Ans: {i["ans"]}')
+                dmar=int(st.text_input(f'marks out of {i["tmark"]}'),0)
+                stu=i['id']
+            if st.button('Grade'):
+                st.session_state.descriptive=st.session_state.descriptive+1
+                if ass.find_one({'Q':i["question"],'course':optionm,'instructor':st.session_state['userid'],'student':stu}) is None:  
+                    ass.insert_one({'Exam':f'Descriptive{st.session_state.descriptive}','Q':i["question"],'course':optionm,'instructor':st.session_state['userid'],'student':stu,'Marks':dmar})
+                    st.success('Graded Successfully')
+                else:
+                    st.warning('Already Graded')
 
         
     elif page == "Customer Care":
@@ -679,13 +688,33 @@ def mains():
             i=ins['instructor']
             mas=retrival(c,i,page)
 
-        uploaded_file = st.file_uploader("Upload a PDF file", type=[])
+        uploaded_file = st.file_uploader("Upload a file", type=[])
+        
         if st.button('upload'):
             if uploaded_file is not None:
-                file_data = uploaded_file.read()
-                display_pdf(file_data)
-                file_id = fsa.put(file_data, filename=f'{mas}.{i}.{uploaded_file.name}.{st.session_state["userid"]}')
-                st.success(f"📁 File saved to MongoDB with ID: {file_id}")
+                if uploaded_file.type=="application/pdf":
+                    st.error("PDF files are not able to dislay on cloud. Please upload a different file type.")
+                else:
+                    doc=dba.fs.files.find_one({},{'filename':1})
+                    if doc is None:
+                        file_data = uploaded_file.read()
+                        #display_pdf(file_data)
+                        file_id = fsa.put(file_data, filename=f'{mas}.{i}.{uploaded_file.name}.{st.session_state["userid"]}')
+                        st.success(f"📁 File saved to MongoDB with ID: {file_id}")
+                    else:    
+                        filename = doc.get('filename', '')
+                        file_base = filename.split('.')[-1]  # filename without extension
+                        if file_base != st.session_state["userid"]:
+
+                            file_data = uploaded_file.read()
+                            #display_pdf(file_data)
+                            file_id = fsa.put(file_data, filename=f'{mas}.{i}.{uploaded_file.name}.{st.session_state["userid"]}')
+                            st.success(f"📁 File saved to MongoDB with ID: {file_id}")
+
+                        else:
+
+                            st.warning("Already Submitted")
+                    
 
     elif page == "Assesment":
         st.title("Assesment")
@@ -723,6 +752,7 @@ def mains():
                 am=list(p.find({'id':st.session_state["userid"],'spec':s,'course':c},{"_id":0,'m':1}))
                 im=list(p.find({'id':st.session_state["userid"],'spec':s,'course':c},{"_id":0,'instructor':1}))
                 tm=list(m.find({'id':im[0]['instructor'],'option':'Assesment','course':c},{'_id':0,'tmark':1}))
+                mg=0
                 fg=[i['tmark'] for i in tm]
                 sum=0
                 for i in fg:
@@ -730,8 +760,9 @@ def mains():
 
                 for i in a:
                     st.write(f'{i["Exam"]}: {i["Marks"]}')
+                    mg=mg+i["Marks"]
 
-                st.write(f'Total:{(am[0]["m"]/sum)*100}%')
+                st.write(f'Total:{((am[0]["m"]+mg)/sum)*100}%')
                 ma=ag.find({'course':c})
                 for i in ma:
                     st.write(f'Attendance:{i[st.session_state["userid"]]}%')
@@ -809,6 +840,7 @@ def mains():
                                     f1=st.checkbox("Can learn a lot")
                             if st.button('submit'):
                                 f.insert_one({'id':st.session_state['userid'],'spec':s,'course':c,'instructor':i,'vi':a1,'vs':b1,'cs':c1,'vc':d1,'agm':e1,'cl':f1})
+                                st.success("Submitted Sucessfully")
                         else:
                             st.warning('Already Submitted')
             
@@ -940,7 +972,7 @@ def maina():
                 st.write(f"No documents found with the key: {option}")
 
     elif page == "Course Assign":
-        st.title("Course Registration")
+        st.title("Instructor Assignment to Courses")
         st.write("Welcome to the Course page.")
         documents = collection1.find({}, {"spec": 1, "_id": 0})
         key_values = [doc['spec'] for doc in documents if 'spec' in doc]
