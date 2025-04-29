@@ -1017,7 +1017,7 @@ def maina():
                 st.write(f"No documents found with the key: {option}")
 
     elif page == "Notification":
-        st.session_state["messages"]=[i for i in sum.find({})][0]
+        st.session_state["messages"]=[i for i in sum.find({})]
         st.title("Customer Service")
         mes=[]
         c=cust.find({},{'query':1,'id':1,'_id':0})
